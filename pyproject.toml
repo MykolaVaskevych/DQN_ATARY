@@ -9,5 +9,6 @@ dependencies = [
     "gymnasium[atari,classic-control,other]>=1.2.2",
     "ipykernel>=7.1.0",
     "jupyterlab>=4.5.0",
+    "marimo>=0.18.4",
     "stable-baselines3[extra]>=2.7.0",
 ]

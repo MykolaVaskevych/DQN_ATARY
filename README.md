@@ -1,10 +1,25 @@
-# Installing uv
+# A DQN implmentation for the Atari Breakdown game
 
-## Installation methods
+## Quick Start
+
+```bash
+uv sync
+```
+
+```bash
+uv run marimo edit notebook/CS4287-Assignment-2-Deep-Reinforcment-Learning.py
+```
+
+## Dependencies
+
+- uv (python package manager)
+- python3
+
+### Dependency Installation
 
 Install uv with our standalone installers or your package manager of choice.
 
-### Standalone installer
+#### Standalone installer
 
 uv provides a standalone installer to download and install uv:
 
@@ -44,8 +59,3 @@ uv provides a standalone installer to download and install uv:
     PS> powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.9.14/install.ps1 | iex"
     ```
 
-# after uv is installed do this
-
-```bash
-uv sync
-```
