@@ -39,6 +39,7 @@ def _():
         CheckpointCallback,
         DQN,
         EvalCallback,
+        Path,
         VecFrameStack,
         make_atari_env,
         mo,
@@ -67,7 +68,7 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.image("images/breakout.gif", alt="Example diagram", width=400)
+    mo.image("images/breakout.gif", alt="Example diagram", width=400) # needs to run from notebook, TODO: fix path 
     return
 
 
@@ -359,7 +360,6 @@ def _(DQN, vec_env):
         # Use CUDA for GPU acceleration (auto-detected, but explicit is clearer)
         device="cuda",
     )
-
     return (model,)
 
 
@@ -435,7 +435,6 @@ def _(CheckpointCallback, EvalCallback, eval_env):
         # Don't render during evaluation - would slow it down
         render=False,
     )
-
     return checkpoint_callback, eval_callback
 
 
@@ -467,7 +466,7 @@ def _(mo):
 
 
 @app.cell
-def _(checkpoint_callback, eval_callback, eval_env, model, vec_env):
+def _(Path, checkpoint_callback, eval_callback, eval_env, model, vec_env):
     # ==================== TRAINING ====================
 
     # Print training info
@@ -479,11 +478,34 @@ def _(checkpoint_callback, eval_callback, eval_env, model, vec_env):
     print(f"Action space: {vec_env.action_space}")
 
     # Total environment steps to train for
-    # 10M steps matches original DQN paper - takes ~2 hours on RTX 4090
+    # 10M steps matches original DQN paper - took ~2 hours on RTX 4090
     # For longer overnight training (8-10 hours), use 40-50M steps
     # EvalCallback saves best model, so no risk of losing peak performance
-    total_timesteps = 10_000_000
+    total_timesteps = 10
+    # total_timesteps = 10_000_000
 
+
+    #########DELETE ME############
+    import shutil
+
+    def delete_tensorboard_logs():
+        # Path of the current script
+        _current_file = Path(__file__).resolve()
+
+        # Walk upwards until we find the project root
+        # (identified by tensorboard_logs/)
+        for _parent in _current_file.parents:
+            _tb_logs = _parent / "tensorboard_logs"
+            if _tb_logs.exists() and _tb_logs.is_dir():
+                shutil.rmtree(_tb_logs)
+                print(f"Deleted: {_tb_logs}")
+                return
+
+        raise FileNotFoundError("tensorboard_logs directory not found")
+
+    delete_tensorboard_logs()
+
+    ##############################
     # Start the training loop
     model.learn(
         # Number of environment steps to train for
@@ -492,13 +514,14 @@ def _(checkpoint_callback, eval_callback, eval_env, model, vec_env):
         callback=[checkpoint_callback, eval_callback],
         # Show progress bar with ETA
         progress_bar=True,
+        tb_log_name="TMP_LOGS"
     )
 
     # ==================== SAVE AND CLEANUP ====================
 
-    # Save the final trained model (creates dqn_breakout_final.zip)
-    model.save("dqn_breakout_final")
-    # Confirm training completed
+    # # Save the final trained model (creates dqn_breakout_final.zip)
+    # model.save("dqn_breakout_final")
+    # # Confirm training completed
     print("Training complete! Model saved as 'dqn_breakout_final.zip'")
 
     # Close environments to free resources (memory, window handles)
@@ -570,6 +593,170 @@ def _(mo):
 
     ## 4. Plotting Results
     """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    https://stackoverflow.com/questions/41074688/how-do-you-read-tensorboard-files-programmatically
+    """)
+    return
+
+
+@app.cell
+def _():
+    ## READ TENSORBOARD LOGS (SB3 USES it to get logs from learning/training)
+
+    import json
+    from datetime import datetime
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+
+
+
+    return EventAccumulator, np, plt
+
+
+@app.cell
+def _(EventAccumulator, Path, np, plt):
+
+
+
+    from scipy.ndimage import uniform_filter1d
+
+
+    def extract_tensorboard_data(log_dir: str) -> dict:
+        """Extract all metrics from TensorBoard logs."""
+        log_path = Path(log_dir)
+        subdirs = sorted(log_path.iterdir(), key=lambda x: x.name)
+        if not subdirs:
+            return {}
+        latest_run = subdirs[-1]
+        ea = EventAccumulator(str(latest_run))
+        ea.Reload()
+        data = {}
+        for tag in ea.Tags()['scalars']:
+            events = ea.Scalars(tag)
+            data[tag] = {
+                'steps': [e.step for e in events],
+                'values': [e.value for e in events],
+            }
+        return data
+
+
+    def smooth_data(values: list, window_size: int = 50) -> np.ndarray:
+        """Apply smoothing to noisy data."""
+        return uniform_filter1d(np.array(values), size=window_size, mode='nearest')
+
+
+    def plot_training_curves(data: dict, save_path: str = None):
+        """
+        Plot training curves in a 2x2 grid layout.
+    
+        Args:
+            data: Dictionary from extract_tensorboard_data
+            save_path: Optional path to save the figure
+        """
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig.patch.set_facecolor('white')
+    
+        # Color scheme matching the reference image
+        colors = {
+            'loss_raw': '#9999ff',      # Light blue/purple
+            'loss_smooth': '#cc0000',   # Red
+            'reward': '#228B22',        # Forest green
+            'epsilon': '#800080',       # Purple
+            'ep_length': '#FFA500',     # Orange
+        }
+    
+        # Helper to convert steps to millions
+        def to_millions(steps):
+            return np.array(steps) / 1_000_000
+    
+        # ===== Top Left: Training Loss =====
+        ax1 = axes[0, 0]
+        if 'train/loss' in data:
+            steps = to_millions(data['train/loss']['steps'])
+            values = np.array(data['train/loss']['values'])
+            smoothed = smooth_data(values, window_size=100)
+        
+            ax1.plot(steps, values, color=colors['loss_raw'], alpha=0.4, linewidth=0.5)
+            ax1.plot(steps, smoothed, color=colors['loss_smooth'], linewidth=2, label='Smoothed')
+            ax1.legend(loc='upper right')
+    
+        ax1.set_title('Training Loss', fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Timesteps (Millions)', fontsize=11)
+        ax1.set_ylabel('Loss', fontsize=11)
+        ax1.grid(True, alpha=0.3)
+    
+        # ===== Top Right: Training Reward =====
+        ax2 = axes[0, 1]
+        if 'rollout/ep_rew_mean' in data:
+            steps = to_millions(data['rollout/ep_rew_mean']['steps'])
+            values = data['rollout/ep_rew_mean']['values']
+        
+            ax2.plot(steps, values, color=colors['reward'], linewidth=1.5)
+    
+        ax2.set_title('Training Reward', fontsize=14, fontweight='bold')
+        ax2.set_xlabel('Timesteps (Millions)', fontsize=11)
+        ax2.set_ylabel('Mean Episode Reward', fontsize=11)
+        ax2.grid(True, alpha=0.3)
+    
+        # ===== Bottom Left: Exploration Rate =====
+        ax3 = axes[1, 0]
+        if 'rollout/exploration_rate' in data:
+            steps = to_millions(data['rollout/exploration_rate']['steps'])
+            values = data['rollout/exploration_rate']['values']
+        
+            ax3.plot(steps, values, color=colors['epsilon'], linewidth=2)
+    
+        ax3.set_title('Exploration Rate (ε-greedy)', fontsize=14, fontweight='bold')
+        ax3.set_xlabel('Timesteps (Millions)', fontsize=11)
+        ax3.set_ylabel('Epsilon', fontsize=11)
+        ax3.set_ylim(-0.05, 1.05)
+        ax3.grid(True, alpha=0.3)
+    
+        # ===== Bottom Right: Episode Length =====
+        ax4 = axes[1, 1]
+        if 'rollout/ep_len_mean' in data:
+            steps = to_millions(data['rollout/ep_len_mean']['steps'])
+            values = data['rollout/ep_len_mean']['values']
+        
+            ax4.plot(steps, values, color=colors['ep_length'], linewidth=1.5)
+    
+        ax4.set_title('Episode Length', fontsize=14, fontweight='bold')
+        ax4.set_xlabel('Timesteps (Millions)', fontsize=11)
+        ax4.set_ylabel('Mean Episode Length', fontsize=11)
+        ax4.grid(True, alpha=0.3)
+    
+        plt.tight_layout()
+    
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+            print(f"Saved plot to {save_path}")
+    
+        plt.show()
+        return fig
+
+
+    # Example usage
+    if __name__ == "__main__":
+        # Extract data from your TensorBoard logs
+        # log_dir = "./tensorboard_logs/DQN_1/"
+        log_dir= "./option_pain/tensorboard_logs/DQN_5/"
+        data = extract_tensorboard_data(log_dir)
+    
+        print("Available metrics:", list(data.keys()))
+    
+        # Plot training curves
+        fig = plot_training_curves(
+            data, 
+            save_path="training_curves.png"
+        )
     return
 
 
