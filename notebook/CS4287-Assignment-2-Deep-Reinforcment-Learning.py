@@ -19,7 +19,7 @@ def _(mo):
 @app.cell
 def _():
     import marimo as mo
-    from pathlib import Path # For displaying images
+    from pathlib import Path  # For displaying images
     import json
     import matplotlib.pyplot as plt
     import argparse
@@ -28,7 +28,9 @@ def _():
     import numpy as np
     import matplotlib.ticker as ticker
     from stable_baselines3.common.evaluation import evaluate_policy
-    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    from tensorboard.backend.event_processing.event_accumulator import (
+        EventAccumulator,
+    )
 
 
     # Import ALE (Arcade Learning Environment) - registers Atari ROMs with Gymnasium
@@ -52,8 +54,6 @@ def _():
         EventAccumulator,
         Path,
         VecFrameStack,
-        argparse,
-        datetime,
         evaluate_policy,
         json,
         make_atari_env,
@@ -536,7 +536,7 @@ def _(mo):
 
 
 @app.cell
-def _(checkpoint_callback, eval_callback, eval_env, model, vec_env):
+def _(Path, checkpoint_callback, eval_callback, eval_env, model, vec_env):
     # ==================== TRAINING ====================
 
     # Print training info
@@ -553,6 +553,27 @@ def _(checkpoint_callback, eval_callback, eval_env, model, vec_env):
     # EvalCallback saves best model, so no risk of losing peak performance
     total_timesteps = 10
 
+    import shutil
+
+
+    def delete_tensorboard_logs():
+        # Path of the current script
+        current_file = Path(__file__).resolve()
+
+        # Walk upwards until we find the project root
+        # (identified by tensorboard_logs/)
+        for parent in current_file.parents:
+            tb_logs = parent / "tensorboard_logs"
+            if tb_logs.exists() and tb_logs.is_dir():
+                shutil.rmtree(tb_logs)
+                print(f"Deleted: {tb_logs}")
+                return
+
+        raise FileNotFoundError("tensorboard_logs directory not found")
+
+
+    delete_tensorboard_logs()
+
     # Start the training loop
     model.learn(
         # Number of environment steps to train for
@@ -561,12 +582,13 @@ def _(checkpoint_callback, eval_callback, eval_env, model, vec_env):
         callback=[checkpoint_callback, eval_callback],
         # Show progress bar with ETA
         progress_bar=True,
+        tb_log_name="TESTING_NOT_MAIN",  # main is dqn_5 with 10M steps, this one only demo of code with 10 steps
     )
 
     # ==================== SAVE AND CLEANUP ====================
 
     # Save the final trained model (creates dqn_breakout_final.zip)
-    model.save("dqn_breakout_final")
+    # model.save("dqn_breakout_final")
     # Confirm training completed
     print("Training complete! Model saved as 'dqn_breakout_final.zip'")
 
@@ -622,349 +644,9 @@ def _(mo):
 
 
 @app.cell
-def _(
-    DQN,
-    Path,
-    VecFrameStack,
-    argparse,
-    datetime,
-    evaluate_policy,
-    json,
-    make_atari_env,
-    np,
-    plt,
-):
-    #!/usr/bin/env python3
-    """
-    DQN Breakout Performance Metrics Evaluation Script
+def _(EventAccumulator, Path, np, plt):
+    from scipy.ndimage import uniform_filter1d
 
-    Implements DeepMind's evaluation protocol from:
-        Mnih, V., et al. (2015). "Human-level control through deep reinforcement
-        learning." Nature, 518(7540), 529-533. doi:10.1038/nature14236
-
-    Reference values from Table 1 of the paper.
-    """
-
-
-    class NumpyEncoder(json.JSONEncoder):
-        """JSON encoder for numpy types."""
-        def default(self, obj):
-            if isinstance(obj, (np.integer,)):
-                return int(obj)
-            if isinstance(obj, (np.floating,)):
-                return float(obj)
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            return super().default(obj)
-
-
-    # =============================================================================
-    # REFERENCE VALUES - DeepMind Nature 2015 Paper, Table 1
-    # DOI: 10.1038/nature14236
-    # =============================================================================
-
-    BENCHMARKS = {
-        "random_score": 1.7,      # Random agent (Table 1)
-        "human_score": 31.8,      # Professional human tester (Table 1)
-        "deepmind_dqn": 401.2,    # DQN after 200M frames (Table 1)
-        "citation": (
-            "Mnih, V., et al. (2015). Human-level control through deep "
-            "reinforcement learning. Nature, 518(7540), 529-533."
-        ),
-    }
-
-
-    def compute_human_normalized_score(agent_score: float, random_score: float, human_score: float) -> float:
-        """
-        DeepMind's human-normalized score formula.
-
-        HNS = 100 × (agent - random) / (human - random)
-
-        0% = random, 100% = human, >100% = superhuman
-        """
-        if human_score == random_score:
-            return 0.0
-        return 100.0 * (agent_score - random_score) / (human_score - random_score)
-
-
-    def load_learning_curve(npz_path: str) -> list[dict]:
-        """Load learning curve from SB3's evaluations.npz file."""
-        path = Path(npz_path)
-        if not path.exists():
-            return []
-
-        data = np.load(npz_path)
-        points = []
-        for i, ts in enumerate(data['timesteps']):
-            scores = data['results'][i]
-            points.append({
-                "timestep": int(ts),
-                "mean": float(np.mean(scores)),
-                "std": float(np.std(scores)),
-                "min": float(np.min(scores)),
-                "max": float(np.max(scores)),
-            })
-        return points
-
-
-    def setup_plots():
-        """Configure matplotlib for publication quality."""
-        plt.rcParams.update({
-            'font.size': 11,
-            'axes.labelsize': 12,
-            'axes.titlesize': 13,
-            'figure.figsize': (10, 6),
-            'figure.dpi': 150,
-            'savefig.dpi': 300,
-            'savefig.bbox': 'tight',
-            'axes.grid': True,
-            'grid.alpha': 0.3,
-        })
-
-
-    parser = argparse.ArgumentParser(description="Evaluate DQN on Breakout")
-    parser.add_argument('--model', '-m', default='dqn_breakout_final.zip', help='Model path')
-    parser.add_argument('--episodes', '-n', type=int, default=30, help='Evaluation episodes (default: 30)')
-    parser.add_argument('--output-dir', '-o', default='metrics_output', help='Output directory')
-    parser.add_argument('--deterministic', action='store_true', help='Use deterministic actions (no exploration)')
-    parser.add_argument('--skip-random', action='store_true', help='Skip random baseline computation')
-    args = parser.parse_args()
-
-    this_output_dir = Path(args.output_dir)
-    this_output_dir.mkdir(exist_ok=True)
-
-    print("\n" + "=" * 60)
-    print("  DQN BREAKOUT METRICS - DeepMind Protocol")
-    print("=" * 60)
-
-    # Load model
-    print(f"\nLoading model: {args.model}")
-    this_model = DQN.load(args.model)
-
-    # Create evaluation environment (same as training)
-    print("Creating evaluation environment...")
-    this_eval_env = make_atari_env("BreakoutNoFrameskip-v4", n_envs=1, seed=42)
-    this_eval_env = VecFrameStack(this_eval_env, n_stack=4)
-
-    # =================================================================
-    # STEP 1: Evaluate trained agent
-    # =================================================================
-    print(f"\nEvaluating trained agent ({args.episodes} episodes)...")
-
-    agent_rewards, agent_lengths = evaluate_policy(
-        this_model,
-        this_eval_env,
-        n_eval_episodes=args.episodes,
-        deterministic=args.deterministic,
-        return_episode_rewards=True,
-    )
-
-    agent_mean = float(np.mean(agent_rewards))
-    agent_std = float(np.std(agent_rewards))
-    agent_min = float(np.min(agent_rewards))
-    agent_max = float(np.max(agent_rewards))
-
-    print(f"  Mean: {agent_mean:.1f} ± {agent_std:.1f}")
-    print(f"  Min: {agent_min:.1f}, Max: {agent_max:.1f}")
-
-    # =================================================================
-    # STEP 2: Compute random baseline
-    # =================================================================
-    if args.skip_random:
-        random_mean = BENCHMARKS["random_score"]
-        random_std = 0.0
-        random_rewards = [random_mean]
-        print(f"\nUsing paper random baseline: {random_mean}")
-    else:
-        print(f"\nComputing random baseline ({args.episodes} episodes)...")
-
-        # Create a dummy model that takes random actions
-        random_env = make_atari_env("BreakoutNoFrameskip-v4", n_envs=1, seed=123)
-        random_env = VecFrameStack(random_env, n_stack=4)
-
-        random_rewards = []
-        for ep in range(args.episodes):
-            obs = random_env.reset()
-            done = False
-            total_reward = 0
-            while not done:
-                action = [random_env.action_space.sample()]
-                obs, reward, done, info = random_env.step(action)
-                total_reward += reward[0]
-                if "episode" in info[0]:
-                    total_reward = info[0]["episode"]["r"]
-                    break
-            random_rewards.append(total_reward)
-            if (ep + 1) % 10 == 0:
-                print(f"  Episode {ep + 1}/{args.episodes}")
-
-        random_env.close()
-        random_mean = float(np.mean(random_rewards))
-        random_std = float(np.std(random_rewards))
-        print(f"  Random baseline: {random_mean:.1f} ± {random_std:.1f}")
-
-    # =================================================================
-    # STEP 3: Calculate human-normalized score
-    # =================================================================
-    hns = compute_human_normalized_score(agent_mean, random_mean, BENCHMARKS["human_score"])
-
-    # DeepMind's DQN HNS for comparison
-    deepmind_hns = compute_human_normalized_score(
-        BENCHMARKS["deepmind_dqn"], BENCHMARKS["random_score"], BENCHMARKS["human_score"]
-    )
-
-    # =================================================================
-    # STEP 4: Load learning curve from training
-    # =================================================================
-    print("\nLoading learning curve data...")
-    learning_curve = load_learning_curve("logs/evaluations.npz")
-    print(f"  Found {len(learning_curve)} evaluation points")
-
-    # =================================================================
-    # STEP 5: Print summary
-    # =================================================================
-    print("\n" + "=" * 60)
-    print("                 RESULTS SUMMARY")
-    print("=" * 60)
-    print(f"\n{'Metric':<30} {'Value':>12} {'Source':>15}")
-    print("-" * 60)
-    print(f"{'Our DQN Mean':<30} {agent_mean:>12.1f} {'Computed':>15}")
-    print(f"{'Our DQN Std':<30} {agent_std:>12.1f} {'Computed':>15}")
-    print(f"{'Our DQN Min':<30} {agent_min:>12.1f} {'Computed':>15}")
-    print(f"{'Our DQN Max':<30} {agent_max:>12.1f} {'Computed':>15}")
-    print("-" * 60)
-    print(f"{'Random (Computed)':<30} {random_mean:>12.1f} {'Computed':>15}")
-    print(f"{'Random (DeepMind)':<30} {BENCHMARKS['random_score']:>12.1f} {'Nature 2015':>15}")
-    print(f"{'Human (DeepMind)':<30} {BENCHMARKS['human_score']:>12.1f} {'Nature 2015':>15}")
-    print(f"{'DQN (DeepMind, 200M)':<30} {BENCHMARKS['deepmind_dqn']:>12.1f} {'Nature 2015':>15}")
-    print("-" * 60)
-    print(f"{'Human-Normalized Score':<30} {hns:>11.1f}% {'Computed':>15}")
-    print(f"{'DeepMind DQN HNS':<30} {deepmind_hns:>11.1f}% {'Nature 2015':>15}")
-    print("=" * 60)
-    print(f"\nRef: {BENCHMARKS['citation']}")
-
-    # =================================================================
-    # STEP 6: Save JSON report
-    # =================================================================
-    report = {
-        "timestamp": datetime.now().isoformat(),
-        "model_path": args.model,
-        "n_episodes": args.episodes,
-        "deterministic": args.deterministic,
-        "agent": {
-            "mean": agent_mean,
-            "std": agent_std,
-            "min": agent_min,
-            "max": agent_max,
-            "all_rewards": [float(r) for r in agent_rewards],
-            "all_lengths": [int(l) for l in agent_lengths],
-        },
-        "random_baseline": {
-            "mean": random_mean,
-            "std": random_std,
-            "computed": not args.skip_random,
-        },
-        "benchmarks": BENCHMARKS,
-        "human_normalized_score": hns,
-        "learning_curve": learning_curve,
-    }
-
-    report_path = this_output_dir / "metrics_report.json"
-    with open(report_path, 'w') as f:
-        json.dump(report, f, indent=2, cls=NumpyEncoder)
-    print(f"\nReport saved: {report_path}")
-
-    # =================================================================
-    # STEP 7: Generate plots
-    # =================================================================
-    setup_plots()
-
-    # Plot 1: Learning Curve
-    if learning_curve:
-        fig, ax = plt.subplots()
-        timesteps = [p["timestep"] / 1e6 for p in learning_curve]
-        means = [p["mean"] for p in learning_curve]
-        stds = [p["std"] for p in learning_curve]
-
-        ax.plot(timesteps, means, 'b-', linewidth=2, label='Mean Score')
-        ax.fill_between(timesteps,
-                        np.array(means) - np.array(stds),
-                        np.array(means) + np.array(stds),
-                        alpha=0.2, label='±1 Std')
-        ax.axhline(BENCHMARKS["human_score"], color='g', linestyle='--',
-                       label=f'Human ({BENCHMARKS["human_score"]})')
-        ax.axhline(BENCHMARKS["random_score"], color='r', linestyle=':',
-                       label=f'Random ({BENCHMARKS["random_score"]})')
-
-        ax.set_xlabel('Training Timesteps (Millions)')
-        ax.set_ylabel('Average Score')
-        ax.set_title('DQN Learning Curve on Atari Breakout')
-        ax.legend(loc='upper left')
-        plt.savefig(this_output_dir / "learning_curve.png")
-        plt.close()
-        print(f"Plot saved: {this_output_dir}/learning_curve.png")
-
-    # Plot 2: Score Distribution
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(agent_rewards, bins=min(20, len(agent_rewards)),
-            edgecolor='black', alpha=0.7, color='steelblue')
-    ax.axvline(agent_mean, color='red', linewidth=2, label=f'Mean: {agent_mean:.1f}')
-    ax.set_xlabel('Score')
-    ax.set_ylabel('Frequency')
-    ax.set_title(f'Score Distribution ({args.episodes} episodes)')
-    ax.legend()
-    plt.savefig(this_output_dir / "score_distribution.png")
-    plt.close()
-    print(f"Plot saved: {this_output_dir}/score_distribution.png")
-
-    # Plot 3: Comparison Bar Chart
-    fig, ax = plt.subplots(figsize=(10, 6))
-    categories = ['Random\n(Computed)', 'Random\n(DeepMind)', 'Human\n(DeepMind)',
-                  'Our DQN', 'DQN\n(DeepMind)']
-    values = [random_mean, BENCHMARKS["random_score"], BENCHMARKS["human_score"],
-              agent_mean, BENCHMARKS["deepmind_dqn"]]
-    colors = ['lightcoral', 'indianred', 'lightgreen', 'steelblue', 'navy']
-
-    bars = ax.bar(categories, values, color=colors, edgecolor='black')
-    for bar, val in zip(bars, values):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 5,
-                f'{val:.1f}', ha='center', fontsize=10)
-
-    ax.set_ylabel('Average Score')
-    ax.set_title('Performance Comparison on Atari Breakout')
-    plt.savefig(this_output_dir / "comparison_chart.png")
-    plt.close()
-    print(f"Plot saved: {this_output_dir}/comparison_chart.png")
-
-    # Plot 4: Human-Normalized Score
-    fig, ax = plt.subplots(figsize=(8, 5))
-    categories = ['Random', 'Human', 'Our DQN', 'DQN (DeepMind)']
-    values = [0, 100, hns, deepmind_hns]
-    colors = ['lightcoral', 'lightgreen', 'steelblue', 'navy']
-
-    bars = ax.bar(categories, values, color=colors, edgecolor='black')
-    for bar, val in zip(bars, values):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 20,
-                f'{val:.1f}%', ha='center', fontsize=11, fontweight='bold')
-
-    ax.axhline(100, color='green', linestyle='--', alpha=0.5)
-    ax.set_ylabel('Human-Normalized Score (%)')
-    ax.set_title('Human-Normalized Performance')
-    plt.savefig(this_output_dir / "human_normalized.png")
-    plt.close()
-    print(f"Plot saved: {this_output_dir}/human_normalized.png")
-
-    this_eval_env.close()
-    print("\nDone!")
-    return
-
-
-@app.cell
-def _(EventAccumulator, Path, json, np, plt):
-    #!/usr/bin/env python3
-    """
-    Generate comprehensive metrics report with all training data.
-    """
 
     def extract_tensorboard_data(log_dir: str) -> dict:
         """Extract all metrics from TensorBoard logs."""
@@ -972,123 +654,213 @@ def _(EventAccumulator, Path, json, np, plt):
         subdirs = sorted(log_path.iterdir(), key=lambda x: x.name)
         if not subdirs:
             return {}
-
         latest_run = subdirs[-1]
         ea = EventAccumulator(str(latest_run))
         ea.Reload()
-
         data = {}
-        for tag in ea.Tags()['scalars']:
+        for tag in ea.Tags()["scalars"]:
             events = ea.Scalars(tag)
             data[tag] = {
-                'steps': [e.step for e in events],
-                'values': [e.value for e in events],
+                "steps": [e.step for e in events],
+                "values": [e.value for e in events],
             }
         return data
 
-    output_dir = Path("metrics_output")
-    output_dir.mkdir(exist_ok=True)
 
-    # Load evaluation results
-    this_report = None
-    with open(output_dir / "metrics_report.json") as this_f:
-        this_report = json.load(this_f)
-
-    # Extract TensorBoard data
-    print("Extracting TensorBoard data...")
-    tb_data = extract_tensorboard_data("tensorboard_logs")
-
-    agent = this_report["agent"]
-    benchmarks = this_report["benchmarks"]
-    random_baseline = this_report["random_baseline"]
-    this_learning_curve = this_report["learning_curve"]
-
-    # Get final training metrics
-    final_loss = tb_data.get('train/loss', {}).get('values', [None])[-1]
-    final_lr = tb_data.get('train/learning_rate', {}).get('values', [None])[-1]
-    final_eps = tb_data.get('rollout/exploration_rate', {}).get('values', [None])[-1]
-    final_fps = tb_data.get('time/fps', {}).get('values', [None])[-1]
-
-    # Loss statistics
-    loss_values = tb_data.get('train/loss', {}).get('values', [])
-    loss_mean = np.mean(loss_values) if loss_values else 0
-    loss_std = np.std(loss_values) if loss_values else 0
-    loss_min = np.min(loss_values) if loss_values else 0
-    loss_max = np.max(loss_values) if loss_values else 0
-
-    # Count score frequencies
-    scores = agent['all_rewards']
-    unique, counts = np.unique(scores, return_counts=True)
-    score_freq = list(zip(unique, counts))
+    def smooth_data(values: list, window_size: int = 50) -> np.ndarray:
+        """Apply smoothing to noisy data."""
+        return uniform_filter1d(np.array(values), size=window_size, mode="nearest")
 
 
+    def plot_training_curves(data: dict, save_path: str = None):
+        """
+        Plot training curves in a 2x2 grid layout.
 
-    # =================================================================
-    # Training Curves Plot (keep this one)
-    # =================================================================
+        Args:
+            data: Dictionary from extract_tensorboard_data
+            save_path: Optional path to save the figure
+        """
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig.patch.set_facecolor("white")
 
-    if 'train/loss' in tb_data:
-        this_fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        # Color scheme matching the reference image
+        colors = {
+            "loss_raw": "#9999ff",  # Light blue/purple
+            "loss_smooth": "#cc0000",  # Red
+            "reward": "#228B22",  # Forest green
+            "epsilon": "#800080",  # Purple
+            "ep_length": "#FFA500",  # Orange
+        }
 
-        # Loss over time
-        this_ax = axes[0, 0]
-        steps = np.array(tb_data['train/loss']['steps']) / 1e6
-        losses = tb_data['train/loss']['values']
-        this_ax.plot(steps, losses, 'b-', alpha=0.3, linewidth=0.5)
-        window = min(100, len(losses) // 10)
-        if window > 1:
-            smoothed = np.convolve(losses, np.ones(window)/window, mode='valid')
-            this_ax.plot(steps[window-1:], smoothed, 'r-', linewidth=1.5, label='Smoothed')
-        this_ax.set_xlabel('Timesteps (Millions)')
-        this_ax.set_ylabel('Loss')
-        this_ax.set_title('Training Loss')
-        this_ax.legend()
+        # Helper to convert steps to millions
+        def to_millions(steps):
+            return np.array(steps) / 1_000_000
 
-        # Reward over time
-        this_ax = axes[0, 1]
-        if 'rollout/ep_rew_mean' in tb_data:
-            steps = np.array(tb_data['rollout/ep_rew_mean']['steps']) / 1e6
-            rewards = tb_data['rollout/ep_rew_mean']['values']
-            this_ax.plot(steps, rewards, 'g-', linewidth=1.5)
-            this_ax.axhline(benchmarks['human_score'], color='orange', linestyle='--', label=f"Human: {benchmarks['human_score']}")
-            this_ax.set_xlabel('Timesteps (Millions)')
-            this_ax.set_ylabel('Mean Episode Reward')
-            this_ax.set_title('Training Reward')
-            this_ax.legend()
+        # ===== Top Left: Training Loss =====
+        ax1 = axes[0, 0]
+        if "train/loss" in data:
+            steps = to_millions(data["train/loss"]["steps"])
+            values = np.array(data["train/loss"]["values"])
+            smoothed = smooth_data(values, window_size=100)
 
-        # Exploration rate
-        this_ax = axes[1, 0]
-        if 'rollout/exploration_rate' in tb_data:
-            steps = np.array(tb_data['rollout/exploration_rate']['steps']) / 1e6
-            eps = tb_data['rollout/exploration_rate']['values']
-            this_ax.plot(steps, eps, 'purple', linewidth=1.5)
-            this_ax.set_xlabel('Timesteps (Millions)')
-            this_ax.set_ylabel('Epsilon')
-            this_ax.set_title('Exploration Rate (ε-greedy)')
+            ax1.plot(
+                steps, values, color=colors["loss_raw"], alpha=0.4, linewidth=0.5
+            )
+            ax1.plot(
+                steps,
+                smoothed,
+                color=colors["loss_smooth"],
+                linewidth=2,
+                label="Smoothed",
+            )
+            ax1.legend(loc="upper right")
 
-        # Episode length
-        this_ax = axes[1, 1]
-        if 'rollout/ep_len_mean' in tb_data:
-            steps = np.array(tb_data['rollout/ep_len_mean']['steps']) / 1e6
-            lengths = tb_data['rollout/ep_len_mean']['values']
-            this_ax.plot(steps, lengths, 'orange', linewidth=1.5)
-            this_ax.set_xlabel('Timesteps (Millions)')
-            this_ax.set_ylabel('Mean Episode Length')
-            this_ax.set_title('Episode Length')
+        ax1.set_title("Training Loss", fontsize=14, fontweight="bold")
+        ax1.set_xlabel("Timesteps (Millions)", fontsize=11)
+        ax1.set_ylabel("Loss", fontsize=11)
+        ax1.grid(True, alpha=0.3)
+
+        # ===== Top Right: Training Reward =====
+        ax2 = axes[0, 1]
+        if "rollout/ep_rew_mean" in data:
+            steps = to_millions(data["rollout/ep_rew_mean"]["steps"])
+            values = data["rollout/ep_rew_mean"]["values"]
+
+            ax2.plot(steps, values, color=colors["reward"], linewidth=1.5)
+
+        ax2.set_title("Training Reward", fontsize=14, fontweight="bold")
+        ax2.set_xlabel("Timesteps (Millions)", fontsize=11)
+        ax2.set_ylabel("Mean Episode Reward", fontsize=11)
+        ax2.grid(True, alpha=0.3)
+
+        # ===== Bottom Left: Exploration Rate =====
+        ax3 = axes[1, 0]
+        if "rollout/exploration_rate" in data:
+            steps = to_millions(data["rollout/exploration_rate"]["steps"])
+            values = data["rollout/exploration_rate"]["values"]
+
+            ax3.plot(steps, values, color=colors["epsilon"], linewidth=2)
+
+        ax3.set_title(
+            "Exploration Rate (ε-greedy)", fontsize=14, fontweight="bold"
+        )
+        ax3.set_xlabel("Timesteps (Millions)", fontsize=11)
+        ax3.set_ylabel("Epsilon", fontsize=11)
+        ax3.set_ylim(-0.05, 1.05)
+        ax3.grid(True, alpha=0.3)
+
+        # ===== Bottom Right: Episode Length =====
+        ax4 = axes[1, 1]
+        if "rollout/ep_len_mean" in data:
+            steps = to_millions(data["rollout/ep_len_mean"]["steps"])
+            values = data["rollout/ep_len_mean"]["values"]
+
+            ax4.plot(steps, values, color=colors["ep_length"], linewidth=1.5)
+
+        ax4.set_title("Episode Length", fontsize=14, fontweight="bold")
+        ax4.set_xlabel("Timesteps (Millions)", fontsize=11)
+        ax4.set_ylabel("Mean Episode Length", fontsize=11)
+        ax4.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.savefig(output_dir / "training_curves.png", dpi=300)
-        plt.close()
-        print(f"Training curves saved: {output_dir}/training_curves.png")
 
-    # Remove the bad score_analysis.png if it exists
-    bad_plot = output_dir / "score_analysis.png"
-    if bad_plot.exists():
-        bad_plot.unlink()
-        print(f"Removed: {bad_plot}")
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
+            print(f"Saved plot to {save_path}")
 
-    print("\nDone!")
+        plt.show()
+        return fig
 
+
+    # Example usage
+    if __name__ == "__main__":
+        # Extract data from your TensorBoard logs
+        log_dir = "./option_pain/tensorboard_logs/DQN_5/"
+        data = extract_tensorboard_data(log_dir)
+
+        print("Available metrics:", list(data.keys()))
+
+        # Plot training curves
+        fig = plot_training_curves(data, save_path="training_curves.png")
+    return
+
+
+@app.cell
+def _(DQN, eval_env, evaluate_policy):
+    model_for_eval = DQN.load(
+        "./option_pain/best_model/best_model.zip", env=eval_env
+    )
+
+    mean_reward, std_reward = evaluate_policy(
+        model_for_eval,
+        eval_env,
+        n_eval_episodes=100,
+        deterministic=True,
+        return_episode_rewards=False,
+    )
+
+    print(f"Mean reward: {mean_reward:.2f} ± {std_reward:.2f}")
+    return (model_for_eval,)
+
+
+@app.cell
+def _(eval_env, evaluate_policy, model_for_eval, plt):
+    rewards, _ = evaluate_policy(
+        model_for_eval,
+        eval_env,
+        n_eval_episodes=50,
+        deterministic=True,
+        return_episode_rewards=True,
+    )
+
+    plt.hist(rewards, bins=15)
+    plt.xlabel("Episode Return")
+    plt.ylabel("Frequency")
+    plt.title("Evaluation Return Distribution")
+    plt.show()
+    return (rewards,)
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    Figure shows the distribution of episode returns during evaluation. The distribution is bimodal, with a cluster of low-return episodes corresponding to early failures and a second cluster of high-return episodes indicating successful task completion. This explains the relatively large standard deviation despite a high mean return and suggests that the learned policy performs well in most cases but remains sensitive to early-state perturbations.
+    """)
+    return
+
+
+@app.cell
+def _(np, rewards):
+    success_threshold = 200
+    success_rate = np.mean(np.array(rewards) >= success_threshold)
+
+    print(f"Success rate: {success_rate * 100:.1f}%")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    The trained agent achieved a success rate of X%, defined as episodes with return ≥ 200.
+    """)
+    return
+
+
+@app.cell
+def _(np, rewards):
+    median = np.median(rewards)
+    q1 = np.percentile(rewards, 25)
+    q3 = np.percentile(rewards, 75)
+
+    print(f"Median: {median}, IQR: [{q1}, {q3}]")
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    The median return was X, with an interquartile range of [Q1, Q3], indicating that most successful episodes cluster at high returns.
+    """)
     return
 
 
@@ -1096,6 +868,7 @@ def _(EventAccumulator, Path, json, np, plt):
 def _(Path, json, plt):
     BASE_DIR = Path(__file__).resolve().parent
     print()
+
 
     def load_tb_json(filename):
         path = BASE_DIR / filename
@@ -1159,7 +932,9 @@ def _(Path, json, plt):
         plt.close()
 
         plt.figure(figsize=(10, 6))
-        plt.plot(steps_eval_len, eval_len, marker="o", label="Eval Mean Episode Length")
+        plt.plot(
+            steps_eval_len, eval_len, marker="o", label="Eval Mean Episode Length"
+        )
         plt.xlabel("Training Timesteps (Millions)")
         plt.ylabel("Mean Episode Length")
         plt.title("Evaluation Episode Length During Training")
