@@ -20,6 +20,16 @@ def _(mo):
 def _():
     import marimo as mo
     from pathlib import Path # For displaying images
+    import json
+    import matplotlib.pyplot as plt
+    import argparse
+    from dataclasses import dataclass
+    from datetime import datetime
+    import numpy as np
+    import matplotlib.ticker as ticker
+    from stable_baselines3.common.evaluation import evaluate_policy
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
 
     # Import ALE (Arcade Learning Environment) - registers Atari ROMs with Gymnasium
     import ale_py
@@ -39,10 +49,17 @@ def _():
         CheckpointCallback,
         DQN,
         EvalCallback,
+        EventAccumulator,
         Path,
         VecFrameStack,
+        argparse,
+        datetime,
+        evaluate_policy,
+        json,
         make_atari_env,
         mo,
+        np,
+        plt,
     )
 
 
@@ -68,7 +85,7 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.image("images/breakout.gif", alt="Example diagram", width=400) # needs to run from notebook, TODO: fix path 
+    mo.image("images/breakout.gif", alt="Example diagram", width=400)
     return
 
 
@@ -263,24 +280,77 @@ def _(mo):
     mo.md(r"""
     ### 3.2 Network Structure: Convolutional Neural Networks and Deep Q-Networks
 
-    A major limitation of classical Q-learning is that it does not scale well to environments with large or high-dimensional state spaces. In many realistic problems, the number of possible states becomes extremely large, making it infeasible to store and update a separate Q-value for every state–action pair. For example, when considering arcade-style games such as Ms. Pac-Man, the number of possible states grows combinatorially due to the presence or absence of pellets and the positions of multiple moving objects. As a result, the total number of states can become astronomically large, far exceeding what can be handled using tabular methods [1].
+    Although the Stable-Baselines3 implementation hides the low-level training loop from the user, the Q-learning update described in the previous section is applied repeatedly during the execution of the $\texttt{model.learn()}$ function. Internally, Stable-Baselines3 follows the same sequence of operations as the original DQN algorithm, but encapsulates these steps within a well-tested training pipeline.
 
-    To address this limitation, DeepMind proposed the Deep Q-Network (DQN) architecture, which combines Q-learning with convolutional neural networks (CNNs) [?]. By using a neural network as a function approximator, DQN is able to generalise across similar states instead of explicitly storing Q-values for every possible state. This approach enables reinforcement learning agents to operate directly on high-dimensional sensory input such as raw pixel data.
+    Q-learning aims to learn the optimal action–value function $Q^*(s, a)$, where $Q^*$ represents the optimal Q-function, which maps state–action pairs to their expected cumulative discounted rewards. In classical tabular Q-learning, this function is represented explicitly as a lookup table containing a separate Q-value for each possible state–action pair. While effective for problems with small, discrete state spaces, this approach becomes impractical for many real-world tasks, where the number of possible states grows extremely large.
 
-    Convolutional Neural Networks are particularly well suited for this task because they are designed to process data in a grid-like structure, such as images. Rather than treating each input pixel independently, CNNs use local receptive fields and shared weights to learn spatially meaningful features. Convolutional layers apply learned filters across the input image to detect patterns such as edges, shapes, and textures. As these layers are stacked, the network learns increasingly abstract representations, with simple visual features combining into more complex structures [2].
+    This limitation is particularly evident in arcade-style games such as Ms. Pac-Man. The game state depends on the configuration of remaining pellets, the positions and velocities of multiple moving entities within a 2D image enviornment and other environmental factors. As these elements combine, the resulting state space grows combinatorially, leading to an astronomically large number of distinct states. Under such conditions, storing and updating a separate Q-value for every state–action pair is infeasible, rendering tabular methods unsuitable.
 
-    This ability to automatically extract relevant features from raw images is crucial in reinforcement learning tasks involving visual input. Instead of manually engineering state features, the CNN learns which aspects of the game frames are important for decision-making. This is particularly important in Atari games, where object positions, motion, and interactions must all be inferred from pixel data.
+    To address this scalability issue, DeepMind introduced the Deep Q-Network (DQN) architecture, which combines Q-learning with deep neural networks. In DQN, a convolutional neural network (CNN) parameterized by weights $\theta$ is used as a function approximator, producing estimates of the optimal action–value function:
 
-    In the original DeepMind DQN architecture, illustrated in Figure ??, the input to the network consists of four consecutive grayscale frames, each resized to 84 × 84 pixels. Stacking multiple frames allows the agent to capture temporal information such as the direction and speed of moving objects, which cannot be inferred from a single static image. These stacked frames are passed through a sequence of convolutional layers that extract visual features, followed by fully connected layers that integrate this information.
+    $Q(s, a; \theta) \approx Q^*(s, a)$
 
-    Specifically, the first convolutional layer applies 32 filters of size 8 × 8 with a stride of 4, followed by a ReLU activation function. This is followed by a second convolutional layer with 64 filters of size 4 × 4 and a stride of 2, again using ReLU activations. A third convolutional layer applies 64 filters of size 3 × 3 with a stride of 1. The resulting feature maps are then flattened and passed into a fully connected layer with 512 units. Finally, the output layer produces one Q-value for each possible action available in the environment.
+    Rather than relying on a lookup table, the network learns to generalize across similar states by extracting high-level features from raw pixel observations. The use of convolutional layers is particularly well suited to visual environments, as they exploit spatial structure and translational invariance in the input. By leveraging deep function approximation, DQN enables Q-learning to scale to high-dimensional state spaces that are intractable for traditional tabular reinforcment learning approaches.
 
-    Each output Q-value represents the estimated expected cumulative reward for taking a particular action in the current state and then following the learned policy thereafter. During training, these Q-values are updated using a modified Q-learning loss function that minimises the difference between predicted Q-values and target Q-values computed using the Bellman equation [?].
+    Specifically, the first convolutional layer applies 32 filters of size 8 × 8 with a stride of 4, followed by a ReLU activation function. The large receptive field and stride enable this layer to detect broad, low-level visual features such as edges and basic shapes while significantly reducing the spatial dimensions of the input. This is followed by a second convolutional layer with 64 filters of size 4 × 4 and a stride of 2, again using ReLU activations. This layer builds upon the features detected in the first layer, identifying more complex patterns such as object parts and spatial relationships while further compressing the representation. A third convolutional layer applies 64 filters of size 3 × 3 with a stride of 1, refining the learned features and capturing fine-grained spatial details without additional downsampling. The resulting feature maps are then flattened and passed into a fully connected layer with 512 units, which integrates the spatial information from across the entire visual field to form a compact representation of the game state. Finally, the output layer produces one Q-value for each possible action[2].
 
-    To stabilise training when using deep neural networks, DeepMind introduced two key techniques: experience replay and a target network. Experience replay stores past transitions and samples them randomly during training, which breaks correlations between consecutive experiences and improves data efficiency. The target network is updated less frequently than the main network, providing more stable targets for the Q-learning updates and preventing divergence.
+    In parctice DQNs execution follows the following structure:
 
-    By combining convolutional neural networks with Q-learning and these stabilisation techniques, DQN became the first reinforcement learning algorithm to achieve human-level performance across a wide range of Atari games using a single network architecture and minimal prior knowledge. This demonstrated that deep reinforcement learning can learn effective policies directly from high-
-    dimensional visual input.
+    First we initalize:
+
+    - Our replay buffer which will record all (s, a, r, s') tuples taken which will be played back in a random ordering during training. This is done to stabelize the model by avoiding strong temporal correlations in consecutive experiences and to mitigate catastrophic forgetting.
+    - We initalize the weigths of our network $\theta$
+    - We initalize our target network $\theta^- =  \theta$
+    The target network is updated less frequently than the main network, providing more stable targets for the Q-learning updates and preventing divergence.
+
+    For each episode, begining from an inital state s we step through each timestep (frame). Computing the following at each timestep:
+
+    - Select action action using ε-greedy
+    During training, the agent interacts with the environment using an epsilon-greedy policy. An action is selected either randomly (with probability $\varepsilon$) or greedily by choosing the action with the highest predicted Q-value.
+
+    ```python
+    if random() < ε:
+        action = random_action() # Exploration
+    else:
+        action = argmax_a Q(s, a)  # Exploitation
+    ```
+
+    - Execute action, observe reward r and next state s'
+    - Store transition in replay buffer
+    - Sample minibatch from replay
+
+    Once the number of collected transitions exceeds the learning_starts threshold, Stable-Baselines3 begins applying learning updates at a frequency specified by train_freq. Each update consists of sampling a minibatch of transitions uniformly at random from the replay buffer. For each transition in the minibatch, the target Q-value is computed using the target network according to the Bellman equation:
+
+    $$
+    r + \gamma \max_{a'} Q(s', a'; \theta^{-})
+    $$
+
+    - Compute Target and Loss
+    The network is trained by minimizing the temporal difference (TD) error using gradient descent. The loss function at iteration $i$ is:
+
+
+    $$
+    L_i = \mathbb{E}_{(s,a,r,s') \sim U(D)}\left[ \big( r + \gamma \max_{a'} Q(s', a'; \theta^{-}) - Q(s, a; \theta) \big)^2 \right]
+    $$
+
+    where:
+    $\theta_i^-$ represents the parameters of a target network (periodically updated from $\theta_i$),
+    $\mathcal{D}$ is a replay buffer of experiences and
+    $\gamma$ is the discount factor.
+
+    and therfore $r + \gamma \max_{a'} Q(s', a'; \theta^{-})$ serving as our approximate target throught the use of a CNN
+
+    Stable-Baselines3 performs the weight update using stochastic gradient descent (or a variant such as Adam), adjusting the parameters $\theta$ in the direction that minimises the Q-learning loss. These gradient updates are applied automatically during training and correspond directly to the theoretical Q-learning update rule discussed earlier.
+
+
+    - Update $\theta$
+    - Every x number of steps we update our target network $\theta^-$
+
+    The target network parameters $\theta^{-}$ are updated less frequently, as controlled by the \texttt{target\_update\_interval} parameter. By keeping the target network fixed for several updates, the learning targets remain more stable, which significantly reduces the risk of divergence when training deep neural networks.
+
+
+    By combining convolutional neural networks with Q-learning and these stabilisation techniques, DQN became the first reinforcement learning algorithm to achieve human-level performance across a wide range of Atari games using a single network architecture and minimal prior knowledge. This demonstrated that deep reinforcement learning can learn effective policies directly from high-dimensional visual input.
+
 
     ### 3.3 Q-learning Update and Loss Computation
 
@@ -369,7 +439,7 @@ def _(mo):
     Code walkthrough (DQN configuration).
 
     The agent is created with:
-    ```
+    ```python
     model = DQN("CnnPolicy", vec_env, ...)
     ```
     The "CnnPolicy" indicates that Stable-Baselines3 will use a convolutional neural network suitable for image inputs. This matches the DQN setting where the Q-function is approximated by a CNN that outputs Q-values for each discrete action.
@@ -466,7 +536,7 @@ def _(mo):
 
 
 @app.cell
-def _(Path, checkpoint_callback, eval_callback, eval_env, model, vec_env):
+def _(checkpoint_callback, eval_callback, eval_env, model, vec_env):
     # ==================== TRAINING ====================
 
     # Print training info
@@ -478,34 +548,11 @@ def _(Path, checkpoint_callback, eval_callback, eval_env, model, vec_env):
     print(f"Action space: {vec_env.action_space}")
 
     # Total environment steps to train for
-    # 10M steps matches original DQN paper - took ~2 hours on RTX 4090
+    # 10M steps matches original DQN paper - takes ~2 hours on RTX 4090
     # For longer overnight training (8-10 hours), use 40-50M steps
     # EvalCallback saves best model, so no risk of losing peak performance
     total_timesteps = 10
-    # total_timesteps = 10_000_000
 
-
-    #########DELETE ME############
-    import shutil
-
-    def delete_tensorboard_logs():
-        # Path of the current script
-        _current_file = Path(__file__).resolve()
-
-        # Walk upwards until we find the project root
-        # (identified by tensorboard_logs/)
-        for _parent in _current_file.parents:
-            _tb_logs = _parent / "tensorboard_logs"
-            if _tb_logs.exists() and _tb_logs.is_dir():
-                shutil.rmtree(_tb_logs)
-                print(f"Deleted: {_tb_logs}")
-                return
-
-        raise FileNotFoundError("tensorboard_logs directory not found")
-
-    delete_tensorboard_logs()
-
-    ##############################
     # Start the training loop
     model.learn(
         # Number of environment steps to train for
@@ -514,14 +561,13 @@ def _(Path, checkpoint_callback, eval_callback, eval_env, model, vec_env):
         callback=[checkpoint_callback, eval_callback],
         # Show progress bar with ETA
         progress_bar=True,
-        tb_log_name="TMP_LOGS"
     )
 
     # ==================== SAVE AND CLEANUP ====================
 
-    # # Save the final trained model (creates dqn_breakout_final.zip)
-    # model.save("dqn_breakout_final")
-    # # Confirm training completed
+    # Save the final trained model (creates dqn_breakout_final.zip)
+    model.save("dqn_breakout_final")
+    # Confirm training completed
     print("Training complete! Model saved as 'dqn_breakout_final.zip'")
 
     # Close environments to free resources (memory, window handles)
@@ -569,27 +615,6 @@ def _(mo):
     ```
     closes the environments cleanly and releases system resources. This is good practice when working with multiple environments and ALE backends.
 
-    ### 3.3 Network Structure: Convolutional Neural Networks and Deep Q-Networks
-
-    Although the Stable-Baselines3 implementation hides the low-level training loop from the user, the Q-learning update described in the previous section is applied repeatedly during the execution of the \texttt{model.learn()} function. Internally, Stable-Baselines3 follows the same sequence of operations as the original DQN algorithm, but encapsulates these steps within a well-tested training pipeline.
-
-    During training, the agent interacts with the environment using an epsilon-greedy policy. At each timestep, the current state observation is passed through the convolutional neural network to compute Q-values for all possible actions. An action is then selected either randomly (with probability $\varepsilon$) or greedily by choosing the action with the highest predicted Q-value. The resulting transition $(s,a,r,s')$ is stored in the replay buffer.
-
-    Once the number of collected transitions exceeds the \texttt{learning\_starts} threshold, Stable-Baselines3 begins applying learning updates at a frequency specified by \texttt{train\_freq}. Each update consists of sampling a minibatch of transitions uniformly at random from the replay buffer. For each transition in the minibatch, the target Q-value is computed using the target network according to the Bellman equation:
-
-    $$
-    r + \gamma \max_{a'} Q(s', a'; \theta^{-})
-    $$
-
-
-    The current Q-network then predicts $Q(s,a;\theta)$ for the sampled state–action pairs. The difference between the predicted Q-values and the target Q-values forms the temporal difference error, which is used to compute the squared loss. This loss is averaged over the minibatch and backpropagated through the network to compute gradients with respect to the network parameters.
-
-    Stable-Baselines3 performs the weight update using stochastic gradient descent (or a variant such as Adam), adjusting the parameters $\theta$ in the direction that minimises the Q-learning loss. These gradient updates are applied automatically during training and correspond directly to the theoretical Q-learning update rule discussed earlier.
-
-    The target network parameters $\theta^{-}$ are updated less frequently, as controlled by the \texttt{target\_update\_interval} parameter. By keeping the target network fixed for several updates, the learning targets remain more stable, which significantly reduces the risk of divergence when training deep neural networks.
-
-    In summary, while the Q-learning update is not explicitly written out in the user’s training code, it is repeatedly applied within the \texttt{model.learn()} loop in Stable-Baselines3. The library faithfully implements the standard DQN update mechanism, including replay buffer sampling, target computation, loss minimisation, and delayed target network updates, ensuring that the theoretical algorithm is correctly realised in practice.
-
 
     ## 4. Plotting Results
     """)
@@ -597,37 +622,349 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
-    mo.md(r"""
-    https://stackoverflow.com/questions/41074688/how-do-you-read-tensorboard-files-programmatically
-    """)
+def _(
+    DQN,
+    Path,
+    VecFrameStack,
+    argparse,
+    datetime,
+    evaluate_policy,
+    json,
+    make_atari_env,
+    np,
+    plt,
+):
+    #!/usr/bin/env python3
+    """
+    DQN Breakout Performance Metrics Evaluation Script
+
+    Implements DeepMind's evaluation protocol from:
+        Mnih, V., et al. (2015). "Human-level control through deep reinforcement
+        learning." Nature, 518(7540), 529-533. doi:10.1038/nature14236
+
+    Reference values from Table 1 of the paper.
+    """
+
+
+    class NumpyEncoder(json.JSONEncoder):
+        """JSON encoder for numpy types."""
+        def default(self, obj):
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return super().default(obj)
+
+
+    # =============================================================================
+    # REFERENCE VALUES - DeepMind Nature 2015 Paper, Table 1
+    # DOI: 10.1038/nature14236
+    # =============================================================================
+
+    BENCHMARKS = {
+        "random_score": 1.7,      # Random agent (Table 1)
+        "human_score": 31.8,      # Professional human tester (Table 1)
+        "deepmind_dqn": 401.2,    # DQN after 200M frames (Table 1)
+        "citation": (
+            "Mnih, V., et al. (2015). Human-level control through deep "
+            "reinforcement learning. Nature, 518(7540), 529-533."
+        ),
+    }
+
+
+    def compute_human_normalized_score(agent_score: float, random_score: float, human_score: float) -> float:
+        """
+        DeepMind's human-normalized score formula.
+
+        HNS = 100 × (agent - random) / (human - random)
+
+        0% = random, 100% = human, >100% = superhuman
+        """
+        if human_score == random_score:
+            return 0.0
+        return 100.0 * (agent_score - random_score) / (human_score - random_score)
+
+
+    def load_learning_curve(npz_path: str) -> list[dict]:
+        """Load learning curve from SB3's evaluations.npz file."""
+        path = Path(npz_path)
+        if not path.exists():
+            return []
+
+        data = np.load(npz_path)
+        points = []
+        for i, ts in enumerate(data['timesteps']):
+            scores = data['results'][i]
+            points.append({
+                "timestep": int(ts),
+                "mean": float(np.mean(scores)),
+                "std": float(np.std(scores)),
+                "min": float(np.min(scores)),
+                "max": float(np.max(scores)),
+            })
+        return points
+
+
+    def setup_plots():
+        """Configure matplotlib for publication quality."""
+        plt.rcParams.update({
+            'font.size': 11,
+            'axes.labelsize': 12,
+            'axes.titlesize': 13,
+            'figure.figsize': (10, 6),
+            'figure.dpi': 150,
+            'savefig.dpi': 300,
+            'savefig.bbox': 'tight',
+            'axes.grid': True,
+            'grid.alpha': 0.3,
+        })
+
+
+    parser = argparse.ArgumentParser(description="Evaluate DQN on Breakout")
+    parser.add_argument('--model', '-m', default='dqn_breakout_final.zip', help='Model path')
+    parser.add_argument('--episodes', '-n', type=int, default=30, help='Evaluation episodes (default: 30)')
+    parser.add_argument('--output-dir', '-o', default='metrics_output', help='Output directory')
+    parser.add_argument('--deterministic', action='store_true', help='Use deterministic actions (no exploration)')
+    parser.add_argument('--skip-random', action='store_true', help='Skip random baseline computation')
+    args = parser.parse_args()
+
+    this_output_dir = Path(args.output_dir)
+    this_output_dir.mkdir(exist_ok=True)
+
+    print("\n" + "=" * 60)
+    print("  DQN BREAKOUT METRICS - DeepMind Protocol")
+    print("=" * 60)
+
+    # Load model
+    print(f"\nLoading model: {args.model}")
+    this_model = DQN.load(args.model)
+
+    # Create evaluation environment (same as training)
+    print("Creating evaluation environment...")
+    this_eval_env = make_atari_env("BreakoutNoFrameskip-v4", n_envs=1, seed=42)
+    this_eval_env = VecFrameStack(this_eval_env, n_stack=4)
+
+    # =================================================================
+    # STEP 1: Evaluate trained agent
+    # =================================================================
+    print(f"\nEvaluating trained agent ({args.episodes} episodes)...")
+
+    agent_rewards, agent_lengths = evaluate_policy(
+        this_model,
+        this_eval_env,
+        n_eval_episodes=args.episodes,
+        deterministic=args.deterministic,
+        return_episode_rewards=True,
+    )
+
+    agent_mean = float(np.mean(agent_rewards))
+    agent_std = float(np.std(agent_rewards))
+    agent_min = float(np.min(agent_rewards))
+    agent_max = float(np.max(agent_rewards))
+
+    print(f"  Mean: {agent_mean:.1f} ± {agent_std:.1f}")
+    print(f"  Min: {agent_min:.1f}, Max: {agent_max:.1f}")
+
+    # =================================================================
+    # STEP 2: Compute random baseline
+    # =================================================================
+    if args.skip_random:
+        random_mean = BENCHMARKS["random_score"]
+        random_std = 0.0
+        random_rewards = [random_mean]
+        print(f"\nUsing paper random baseline: {random_mean}")
+    else:
+        print(f"\nComputing random baseline ({args.episodes} episodes)...")
+
+        # Create a dummy model that takes random actions
+        random_env = make_atari_env("BreakoutNoFrameskip-v4", n_envs=1, seed=123)
+        random_env = VecFrameStack(random_env, n_stack=4)
+
+        random_rewards = []
+        for ep in range(args.episodes):
+            obs = random_env.reset()
+            done = False
+            total_reward = 0
+            while not done:
+                action = [random_env.action_space.sample()]
+                obs, reward, done, info = random_env.step(action)
+                total_reward += reward[0]
+                if "episode" in info[0]:
+                    total_reward = info[0]["episode"]["r"]
+                    break
+            random_rewards.append(total_reward)
+            if (ep + 1) % 10 == 0:
+                print(f"  Episode {ep + 1}/{args.episodes}")
+
+        random_env.close()
+        random_mean = float(np.mean(random_rewards))
+        random_std = float(np.std(random_rewards))
+        print(f"  Random baseline: {random_mean:.1f} ± {random_std:.1f}")
+
+    # =================================================================
+    # STEP 3: Calculate human-normalized score
+    # =================================================================
+    hns = compute_human_normalized_score(agent_mean, random_mean, BENCHMARKS["human_score"])
+
+    # DeepMind's DQN HNS for comparison
+    deepmind_hns = compute_human_normalized_score(
+        BENCHMARKS["deepmind_dqn"], BENCHMARKS["random_score"], BENCHMARKS["human_score"]
+    )
+
+    # =================================================================
+    # STEP 4: Load learning curve from training
+    # =================================================================
+    print("\nLoading learning curve data...")
+    learning_curve = load_learning_curve("logs/evaluations.npz")
+    print(f"  Found {len(learning_curve)} evaluation points")
+
+    # =================================================================
+    # STEP 5: Print summary
+    # =================================================================
+    print("\n" + "=" * 60)
+    print("                 RESULTS SUMMARY")
+    print("=" * 60)
+    print(f"\n{'Metric':<30} {'Value':>12} {'Source':>15}")
+    print("-" * 60)
+    print(f"{'Our DQN Mean':<30} {agent_mean:>12.1f} {'Computed':>15}")
+    print(f"{'Our DQN Std':<30} {agent_std:>12.1f} {'Computed':>15}")
+    print(f"{'Our DQN Min':<30} {agent_min:>12.1f} {'Computed':>15}")
+    print(f"{'Our DQN Max':<30} {agent_max:>12.1f} {'Computed':>15}")
+    print("-" * 60)
+    print(f"{'Random (Computed)':<30} {random_mean:>12.1f} {'Computed':>15}")
+    print(f"{'Random (DeepMind)':<30} {BENCHMARKS['random_score']:>12.1f} {'Nature 2015':>15}")
+    print(f"{'Human (DeepMind)':<30} {BENCHMARKS['human_score']:>12.1f} {'Nature 2015':>15}")
+    print(f"{'DQN (DeepMind, 200M)':<30} {BENCHMARKS['deepmind_dqn']:>12.1f} {'Nature 2015':>15}")
+    print("-" * 60)
+    print(f"{'Human-Normalized Score':<30} {hns:>11.1f}% {'Computed':>15}")
+    print(f"{'DeepMind DQN HNS':<30} {deepmind_hns:>11.1f}% {'Nature 2015':>15}")
+    print("=" * 60)
+    print(f"\nRef: {BENCHMARKS['citation']}")
+
+    # =================================================================
+    # STEP 6: Save JSON report
+    # =================================================================
+    report = {
+        "timestamp": datetime.now().isoformat(),
+        "model_path": args.model,
+        "n_episodes": args.episodes,
+        "deterministic": args.deterministic,
+        "agent": {
+            "mean": agent_mean,
+            "std": agent_std,
+            "min": agent_min,
+            "max": agent_max,
+            "all_rewards": [float(r) for r in agent_rewards],
+            "all_lengths": [int(l) for l in agent_lengths],
+        },
+        "random_baseline": {
+            "mean": random_mean,
+            "std": random_std,
+            "computed": not args.skip_random,
+        },
+        "benchmarks": BENCHMARKS,
+        "human_normalized_score": hns,
+        "learning_curve": learning_curve,
+    }
+
+    report_path = this_output_dir / "metrics_report.json"
+    with open(report_path, 'w') as f:
+        json.dump(report, f, indent=2, cls=NumpyEncoder)
+    print(f"\nReport saved: {report_path}")
+
+    # =================================================================
+    # STEP 7: Generate plots
+    # =================================================================
+    setup_plots()
+
+    # Plot 1: Learning Curve
+    if learning_curve:
+        fig, ax = plt.subplots()
+        timesteps = [p["timestep"] / 1e6 for p in learning_curve]
+        means = [p["mean"] for p in learning_curve]
+        stds = [p["std"] for p in learning_curve]
+
+        ax.plot(timesteps, means, 'b-', linewidth=2, label='Mean Score')
+        ax.fill_between(timesteps,
+                        np.array(means) - np.array(stds),
+                        np.array(means) + np.array(stds),
+                        alpha=0.2, label='±1 Std')
+        ax.axhline(BENCHMARKS["human_score"], color='g', linestyle='--',
+                       label=f'Human ({BENCHMARKS["human_score"]})')
+        ax.axhline(BENCHMARKS["random_score"], color='r', linestyle=':',
+                       label=f'Random ({BENCHMARKS["random_score"]})')
+
+        ax.set_xlabel('Training Timesteps (Millions)')
+        ax.set_ylabel('Average Score')
+        ax.set_title('DQN Learning Curve on Atari Breakout')
+        ax.legend(loc='upper left')
+        plt.savefig(this_output_dir / "learning_curve.png")
+        plt.close()
+        print(f"Plot saved: {this_output_dir}/learning_curve.png")
+
+    # Plot 2: Score Distribution
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(agent_rewards, bins=min(20, len(agent_rewards)),
+            edgecolor='black', alpha=0.7, color='steelblue')
+    ax.axvline(agent_mean, color='red', linewidth=2, label=f'Mean: {agent_mean:.1f}')
+    ax.set_xlabel('Score')
+    ax.set_ylabel('Frequency')
+    ax.set_title(f'Score Distribution ({args.episodes} episodes)')
+    ax.legend()
+    plt.savefig(this_output_dir / "score_distribution.png")
+    plt.close()
+    print(f"Plot saved: {this_output_dir}/score_distribution.png")
+
+    # Plot 3: Comparison Bar Chart
+    fig, ax = plt.subplots(figsize=(10, 6))
+    categories = ['Random\n(Computed)', 'Random\n(DeepMind)', 'Human\n(DeepMind)',
+                  'Our DQN', 'DQN\n(DeepMind)']
+    values = [random_mean, BENCHMARKS["random_score"], BENCHMARKS["human_score"],
+              agent_mean, BENCHMARKS["deepmind_dqn"]]
+    colors = ['lightcoral', 'indianred', 'lightgreen', 'steelblue', 'navy']
+
+    bars = ax.bar(categories, values, color=colors, edgecolor='black')
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 5,
+                f'{val:.1f}', ha='center', fontsize=10)
+
+    ax.set_ylabel('Average Score')
+    ax.set_title('Performance Comparison on Atari Breakout')
+    plt.savefig(this_output_dir / "comparison_chart.png")
+    plt.close()
+    print(f"Plot saved: {this_output_dir}/comparison_chart.png")
+
+    # Plot 4: Human-Normalized Score
+    fig, ax = plt.subplots(figsize=(8, 5))
+    categories = ['Random', 'Human', 'Our DQN', 'DQN (DeepMind)']
+    values = [0, 100, hns, deepmind_hns]
+    colors = ['lightcoral', 'lightgreen', 'steelblue', 'navy']
+
+    bars = ax.bar(categories, values, color=colors, edgecolor='black')
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 20,
+                f'{val:.1f}%', ha='center', fontsize=11, fontweight='bold')
+
+    ax.axhline(100, color='green', linestyle='--', alpha=0.5)
+    ax.set_ylabel('Human-Normalized Score (%)')
+    ax.set_title('Human-Normalized Performance')
+    plt.savefig(this_output_dir / "human_normalized.png")
+    plt.close()
+    print(f"Plot saved: {this_output_dir}/human_normalized.png")
+
+    this_eval_env.close()
+    print("\nDone!")
     return
 
 
 @app.cell
-def _():
-    ## READ TENSORBOARD LOGS (SB3 USES it to get logs from learning/training)
-
-    import json
-    from datetime import datetime
-
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-
-
-
-
-    return EventAccumulator, np, plt
-
-
-@app.cell
-def _(EventAccumulator, Path, np, plt):
-
-
-
-    from scipy.ndimage import uniform_filter1d
-
+def _(EventAccumulator, Path, json, np, plt):
+    #!/usr/bin/env python3
+    """
+    Generate comprehensive metrics report with all training data.
+    """
 
     def extract_tensorboard_data(log_dir: str) -> dict:
         """Extract all metrics from TensorBoard logs."""
@@ -635,9 +972,11 @@ def _(EventAccumulator, Path, np, plt):
         subdirs = sorted(log_path.iterdir(), key=lambda x: x.name)
         if not subdirs:
             return {}
+
         latest_run = subdirs[-1]
         ea = EventAccumulator(str(latest_run))
         ea.Reload()
+
         data = {}
         for tag in ea.Tags()['scalars']:
             events = ea.Scalars(tag)
@@ -647,116 +986,354 @@ def _(EventAccumulator, Path, np, plt):
             }
         return data
 
+    output_dir = Path("metrics_output")
+    output_dir.mkdir(exist_ok=True)
 
-    def smooth_data(values: list, window_size: int = 50) -> np.ndarray:
-        """Apply smoothing to noisy data."""
-        return uniform_filter1d(np.array(values), size=window_size, mode='nearest')
+    # Load evaluation results
+    this_report = None
+    with open(output_dir / "metrics_report.json") as this_f:
+        this_report = json.load(this_f)
+
+    # Extract TensorBoard data
+    print("Extracting TensorBoard data...")
+    tb_data = extract_tensorboard_data("tensorboard_logs")
+
+    agent = this_report["agent"]
+    benchmarks = this_report["benchmarks"]
+    random_baseline = this_report["random_baseline"]
+    this_learning_curve = this_report["learning_curve"]
+
+    # Get final training metrics
+    final_loss = tb_data.get('train/loss', {}).get('values', [None])[-1]
+    final_lr = tb_data.get('train/learning_rate', {}).get('values', [None])[-1]
+    final_eps = tb_data.get('rollout/exploration_rate', {}).get('values', [None])[-1]
+    final_fps = tb_data.get('time/fps', {}).get('values', [None])[-1]
+
+    # Loss statistics
+    loss_values = tb_data.get('train/loss', {}).get('values', [])
+    loss_mean = np.mean(loss_values) if loss_values else 0
+    loss_std = np.std(loss_values) if loss_values else 0
+    loss_min = np.min(loss_values) if loss_values else 0
+    loss_max = np.max(loss_values) if loss_values else 0
+
+    # Count score frequencies
+    scores = agent['all_rewards']
+    unique, counts = np.unique(scores, return_counts=True)
+    score_freq = list(zip(unique, counts))
 
 
-    def plot_training_curves(data: dict, save_path: str = None):
-        """
-        Plot training curves in a 2x2 grid layout.
-    
-        Args:
-            data: Dictionary from extract_tensorboard_data
-            save_path: Optional path to save the figure
-        """
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        fig.patch.set_facecolor('white')
-    
-        # Color scheme matching the reference image
-        colors = {
-            'loss_raw': '#9999ff',      # Light blue/purple
-            'loss_smooth': '#cc0000',   # Red
-            'reward': '#228B22',        # Forest green
-            'epsilon': '#800080',       # Purple
-            'ep_length': '#FFA500',     # Orange
-        }
-    
-        # Helper to convert steps to millions
-        def to_millions(steps):
-            return np.array(steps) / 1_000_000
-    
-        # ===== Top Left: Training Loss =====
-        ax1 = axes[0, 0]
-        if 'train/loss' in data:
-            steps = to_millions(data['train/loss']['steps'])
-            values = np.array(data['train/loss']['values'])
-            smoothed = smooth_data(values, window_size=100)
-        
-            ax1.plot(steps, values, color=colors['loss_raw'], alpha=0.4, linewidth=0.5)
-            ax1.plot(steps, smoothed, color=colors['loss_smooth'], linewidth=2, label='Smoothed')
-            ax1.legend(loc='upper right')
-    
-        ax1.set_title('Training Loss', fontsize=14, fontweight='bold')
-        ax1.set_xlabel('Timesteps (Millions)', fontsize=11)
-        ax1.set_ylabel('Loss', fontsize=11)
-        ax1.grid(True, alpha=0.3)
-    
-        # ===== Top Right: Training Reward =====
-        ax2 = axes[0, 1]
-        if 'rollout/ep_rew_mean' in data:
-            steps = to_millions(data['rollout/ep_rew_mean']['steps'])
-            values = data['rollout/ep_rew_mean']['values']
-        
-            ax2.plot(steps, values, color=colors['reward'], linewidth=1.5)
-    
-        ax2.set_title('Training Reward', fontsize=14, fontweight='bold')
-        ax2.set_xlabel('Timesteps (Millions)', fontsize=11)
-        ax2.set_ylabel('Mean Episode Reward', fontsize=11)
-        ax2.grid(True, alpha=0.3)
-    
-        # ===== Bottom Left: Exploration Rate =====
-        ax3 = axes[1, 0]
-        if 'rollout/exploration_rate' in data:
-            steps = to_millions(data['rollout/exploration_rate']['steps'])
-            values = data['rollout/exploration_rate']['values']
-        
-            ax3.plot(steps, values, color=colors['epsilon'], linewidth=2)
-    
-        ax3.set_title('Exploration Rate (ε-greedy)', fontsize=14, fontweight='bold')
-        ax3.set_xlabel('Timesteps (Millions)', fontsize=11)
-        ax3.set_ylabel('Epsilon', fontsize=11)
-        ax3.set_ylim(-0.05, 1.05)
-        ax3.grid(True, alpha=0.3)
-    
-        # ===== Bottom Right: Episode Length =====
-        ax4 = axes[1, 1]
-        if 'rollout/ep_len_mean' in data:
-            steps = to_millions(data['rollout/ep_len_mean']['steps'])
-            values = data['rollout/ep_len_mean']['values']
-        
-            ax4.plot(steps, values, color=colors['ep_length'], linewidth=1.5)
-    
-        ax4.set_title('Episode Length', fontsize=14, fontweight='bold')
-        ax4.set_xlabel('Timesteps (Millions)', fontsize=11)
-        ax4.set_ylabel('Mean Episode Length', fontsize=11)
-        ax4.grid(True, alpha=0.3)
-    
+
+    # =================================================================
+    # Training Curves Plot (keep this one)
+    # =================================================================
+
+    if 'train/loss' in tb_data:
+        this_fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+        # Loss over time
+        this_ax = axes[0, 0]
+        steps = np.array(tb_data['train/loss']['steps']) / 1e6
+        losses = tb_data['train/loss']['values']
+        this_ax.plot(steps, losses, 'b-', alpha=0.3, linewidth=0.5)
+        window = min(100, len(losses) // 10)
+        if window > 1:
+            smoothed = np.convolve(losses, np.ones(window)/window, mode='valid')
+            this_ax.plot(steps[window-1:], smoothed, 'r-', linewidth=1.5, label='Smoothed')
+        this_ax.set_xlabel('Timesteps (Millions)')
+        this_ax.set_ylabel('Loss')
+        this_ax.set_title('Training Loss')
+        this_ax.legend()
+
+        # Reward over time
+        this_ax = axes[0, 1]
+        if 'rollout/ep_rew_mean' in tb_data:
+            steps = np.array(tb_data['rollout/ep_rew_mean']['steps']) / 1e6
+            rewards = tb_data['rollout/ep_rew_mean']['values']
+            this_ax.plot(steps, rewards, 'g-', linewidth=1.5)
+            this_ax.axhline(benchmarks['human_score'], color='orange', linestyle='--', label=f"Human: {benchmarks['human_score']}")
+            this_ax.set_xlabel('Timesteps (Millions)')
+            this_ax.set_ylabel('Mean Episode Reward')
+            this_ax.set_title('Training Reward')
+            this_ax.legend()
+
+        # Exploration rate
+        this_ax = axes[1, 0]
+        if 'rollout/exploration_rate' in tb_data:
+            steps = np.array(tb_data['rollout/exploration_rate']['steps']) / 1e6
+            eps = tb_data['rollout/exploration_rate']['values']
+            this_ax.plot(steps, eps, 'purple', linewidth=1.5)
+            this_ax.set_xlabel('Timesteps (Millions)')
+            this_ax.set_ylabel('Epsilon')
+            this_ax.set_title('Exploration Rate (ε-greedy)')
+
+        # Episode length
+        this_ax = axes[1, 1]
+        if 'rollout/ep_len_mean' in tb_data:
+            steps = np.array(tb_data['rollout/ep_len_mean']['steps']) / 1e6
+            lengths = tb_data['rollout/ep_len_mean']['values']
+            this_ax.plot(steps, lengths, 'orange', linewidth=1.5)
+            this_ax.set_xlabel('Timesteps (Millions)')
+            this_ax.set_ylabel('Mean Episode Length')
+            this_ax.set_title('Episode Length')
+
         plt.tight_layout()
-    
-        if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
-            print(f"Saved plot to {save_path}")
-    
-        plt.show()
-        return fig
+        plt.savefig(output_dir / "training_curves.png", dpi=300)
+        plt.close()
+        print(f"Training curves saved: {output_dir}/training_curves.png")
+
+    # Remove the bad score_analysis.png if it exists
+    bad_plot = output_dir / "score_analysis.png"
+    if bad_plot.exists():
+        bad_plot.unlink()
+        print(f"Removed: {bad_plot}")
+
+    print("\nDone!")
+
+    return
 
 
-    # Example usage
-    if __name__ == "__main__":
-        # Extract data from your TensorBoard logs
-        # log_dir = "./tensorboard_logs/DQN_1/"
-        log_dir= "./option_pain/tensorboard_logs/DQN_5/"
-        data = extract_tensorboard_data(log_dir)
-    
-        print("Available metrics:", list(data.keys()))
-    
-        # Plot training curves
-        fig = plot_training_curves(
-            data, 
-            save_path="training_curves.png"
-        )
+@app.cell(hide_code=True)
+def _(Path, json, plt):
+    BASE_DIR = Path(__file__).resolve().parent
+    print()
+
+    def load_tb_json(filename):
+        path = BASE_DIR / filename
+        with open(path, "r") as f:
+            data = json.load(f)
+
+        # TensorBoard export format: [timestamp, step, value]
+        steps = [entry[1] for entry in data]
+        values = [entry[2] for entry in data]
+
+        # Convert steps to millions for readability
+        steps = [s / 1e6 for s in steps]
+
+        return steps, values
+
+
+    def plot_training_curves():
+        steps_rew, rew = load_tb_json("rollout_ep_rew_mean.json")
+        steps_len, ep_len = load_tb_json("rollout_ep_len_mean.json")
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(steps_rew, rew, label="Mean Episode Reward")
+        plt.plot(steps_len, ep_len, label="Mean Episode Length")
+        plt.xlabel("Training Timesteps (Millions)")
+        plt.ylabel("Value")
+        plt.title("Training Rollout Metrics")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(BASE_DIR / "training_curves.png", dpi=300)
+        plt.close()
+
+
+    def plot_exploration_rate():
+        steps_eps, eps = load_tb_json("rollout_exploration_rate.json")
+
+        plt.figure(figsize=(10, 4))
+        plt.plot(steps_eps, eps)
+        plt.xlabel("Training Timesteps (Millions)")
+        plt.ylabel("Epsilon")
+        plt.title("Exploration Rate (Epsilon-Greedy)")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(BASE_DIR / "exploration_rate.png", dpi=300)
+        plt.close()
+
+
+    def plot_evaluation_curves():
+        steps_eval_rew, eval_rew = load_tb_json("eval_mean_reward.json")
+        steps_eval_len, eval_len = load_tb_json("eval_mean_ep_length.json")
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(steps_eval_rew, eval_rew, marker="o", label="Eval Mean Reward")
+        plt.xlabel("Training Timesteps (Millions)")
+        plt.ylabel("Mean Reward")
+        plt.title("Evaluation Performance During Training")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(BASE_DIR / "learning_curve.png", dpi=300)
+        plt.close()
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(steps_eval_len, eval_len, marker="o", label="Eval Mean Episode Length")
+        plt.xlabel("Training Timesteps (Millions)")
+        plt.ylabel("Mean Episode Length")
+        plt.title("Evaluation Episode Length During Training")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(BASE_DIR / "eval_episode_length.png", dpi=300)
+        plt.close()
+
+
+    plot_training_curves()
+    plot_exploration_rate()
+    plot_evaluation_curves()
+    print("Plots saved to:", BASE_DIR)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    This section presents and interprets the quantitative results obtained during training and evaluation of the Deep Q-Network (DQN) agent on the Atari Breakout environment. All metrics shown in this section were logged automatically by the Stable-Baselines3 framework during training and exported from TensorBoard log files in JSON format. As a result, the reported curves directly reflect the internal learning dynamics of the agent rather than post-processed or manually computed statistics. The selected metrics are standard in deep reinforcement learning research and are commonly used to evaluate learning progress, stability, and policy quality. Each metric captures a different aspect of the DQN training process, and together they provide a comprehensive view of agent performance.
+
+    ### 4.1 Training Metrics Overview
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.image("training_curves.png", alt="Example diagram", width=400)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    Figure 1: Training metrics logged during DQN learning.
+
+    The plots show (top-left) training loss, (top-right) mean episode reward, (bottom-left) epsilon-greedy exploration rate, and (bottom-right) mean episode length as functions of training timesteps. All values are taken directly from TensorBoard logs.
+
+    Figure 1 summarises the core training metrics recorded during learning. The steady increase in mean episode reward and episode length indicates improving gameplay performance, while the bounded and noisy training loss reflects stable temporal-difference learning. The exploration rate decays according to the predefined epsilon-greedy schedule, transitioning the agent from exploration to exploitation.
+
+
+    ### 4.2 Mean Episode Reward
+    """)
+    return
+
+
+@app.cell
+def _():
+    print("TODO")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Figure 2: Mean episode reward during training compared against random and
+    human performance baselines. Shaded regions indicate variability across evalu-
+    ation intervals.
+
+    The mean episode reward is the primary performance metric in reinforcement learning. In Atari Breakout, higher rewards correspond to breaking more bricks and surviving longer. Figure 2 shows a steady improvement in performance over training, with the agent rapidly exceeding random behaviour and eventually surpassing the human baseline reported in prior work.
+
+    Early training is characterised by near-random performance, while later stages show a sharp increase in reward as the agent learns effective paddle control and ball trajectory prediction.
+
+    ### 4.3 Evaluation Performance
+    Evaluation rewards are computed using a deterministic policy (no exploration)and provide a cleaner estimate of the learned policy’s quality. As shown in Figure 3, evaluation performance closely follows training performance, indicating that improvements are due to genuine policy learning rather than stochastic exploration effects.
+
+    ### 4.4 Episode Length
+    The mean episode length measures how long the agent survives in the envi-
+    ronment before losing all lives. In Breakout, longer episodes typically indicate
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.image("learning_curve.png", alt="Example diagram", width=400)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    Figure 3: Evaluation mean episode reward measured periodically during training using a separate evaluation environment without exploration noise. better performance. Figure 4 shows a clear upward trend, demonstrating that the agent becomes increasingly capable of sustaining gameplay and preventing ball loss.
+
+    ### 4.5 Qualitative Results
+    In addition to quantitative metrics, qualitative behaviour was assessed by visual inspection of gameplay. The trained agent demonstrates smooth paddle tracking, anticipates ball rebounds, and consistently clears large portions of the brick layout.
+
+    ### 5.6 Video and Gameplay Frames
+    A short gameplay recording of the trained agent is available online:
+    - https://youtube.com/shorts/hdiVVfBSX9c?feature=share
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.image("learning_curve.png", alt="Example diagram", width=400)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    Figure 4: Mean episode length during evaluation. Increasing episode length indicates improved paddle control and longer survival times.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.image("images/breakout.gif", alt="Example diagram", width=400)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Figure 5: Gameplay frame showing the trained DQN agent maintaining ball control and clearing bricks
+
+    ## 5. Evaluation
+    T
+    his section evaluates the performance of the trained Deep Q-Network (DQN) agent on the Atari Breakout environment. The evaluation focuses on learning effectiveness, training stability, generalisation behaviour, and known limitations of the applied approach. All conclusions are drawn from the quantitative metrics and qualitative observations presented in the Results section.
+
+    ### 5.1 Learning Effectiveness
+
+    The primary objective of this assignment was to train a reinforcement learning agent capable of learning effective gameplay behaviour directly from raw visual input. Based on the observed learning curves, the DQN agent clearly meets this objective.
+    The steady increase in mean episode reward and episode length demonstrates that the agent learns meaningful control policies rather than exploiting trivial reward structures. The agent transitions from near-random behaviour to consistently high-scoring gameplay, ultimately surpassing the average human performance baseline reported in prior work. This confirms that the learned Q-function successfully captures the long-term reward structure of the Breakout environment.
+
+    ### 5.2 Training Stability
+
+    Training stability is a major concern in deep reinforcement learning due to the combination of bootstrapping, function approximation, and non-stationary data distributions. In this implementation, stability is assessed through the behaviour of the training loss, reward curves, and the absence of catastrophic performance collapse. The training loss exhibits bounded oscillations rather than monotonic convergence. This behaviour is expected in DQN and reflects the continually changing target values during learning. Importantly, the loss does not diverge, which indicates that the replay buffer and target network mechanisms successfully stabilise training.
+    Additionally, no sudden drops in performance are observed in the evaluation reward curves. This suggests that the agent does not suffer from severe policy degradation or overfitting during later stages of training.
+
+    ### 5.3 Exploration Strategy Evaluation
+
+    The epsilon-greedy exploration schedule plays a crucial role in the learning process. Early in training, a high exploration rate allows the agent to experience a wide variety of state–action transitions, which is essential given the sparse and delayed reward structure of Breakout.
+    As epsilon decays, the agent increasingly exploits learned Q-values. The sharp improvement in reward that coincides with the stabilisation of epsilon at its minimum value indicates that the agent has accumulated sufficient experience to act primarily greedily. This confirms that the chosen exploration schedule is appropriate for this task. However, epsilon-greedy exploration is known to be relatively inefficient compared to more advanced exploration strategies. While sufficient for this assignment, alternative methods such as noisy networks or entropy-based exploration could potentially improve sample efficiency.
+
+    ### 5.4 Generalisation and Evaluation Environment
+    Evaluation was conducted using a separate environment instance with deterministic action selection. The close alignment between training and evaluation rewards indicates that the learned policy generalises well across episodes and is not overly dependent on stochastic exploration.
+    Nevertheless, it should be noted that evaluation is still performed within the same environment distribution as training. While the agent generalises across different episodes and initial conditions, it is not evaluated on fundamentally different game dynamics or modified reward structures.
+
+    ### 5.5 Limitations
+    Despite strong performance, several limitations should be acknowledged:
+
+    - **Sample Inefficiency:** Training required several million timesteps, highlighting the high sample complexity of DQN when learning from pixel based input.
+
+    - **Computational Cost:** The use of convolutional neural networks and large replay buffers results in high computational and memory requirements.
+
+    - **Algorithmic Constraints:** Standard DQN is known to overestimate Q-values and can suffer from instability in more complex environments. Extensions such as Double DQN or Dueling DQN could improve robustness.
+
+    - **Environment Specificity:** The learned policy is highly specialised to Breakout and cannot transfer directly to other games without retraining.
+
+
+    ### 5.6 Comparison to Reference Implementations
+    While direct numerical comparison to the original DeepMind results is difficult due to differences in hardware, training duration, and evaluation protocols, the qualitative performance trends are consistent with published DQN benchmarks. The agent reaches and exceeds human-level performance, demonstrating that the Stable-Baselines3 implementation faithfully reproduces the core behaviour of the original DQN algorithm.
+
+    5.7 Summary
+    Overall, the evaluation demonstrates that the implemented DQN agent performs effectively, learns stably, and achieves strong performance on the Atari Breakout task. The observed learning dynamics align well with theoretical expectations and prior empirical results, validating both the implementation and the chosen experimental setup.
+
+    ## 6. Discussion and Conclusion
+    This assignment set out to design, implement, and evaluate a Deep Reinforcement Learning agent capable of learning to play the Atari Breakout game directly from raw visual input. Using a Deep Q-Network (DQN) architecture implemented with the Stable-Baselines3 framework, the agent was trained on high-dimensional pixel observations and evaluated using standard reinforcement learning metrics.
+
+    ### 6.1 Discussion
+    The results demonstrate that combining convolutional neural networks with Q-learning enables effective learning in complex, visually rich environments. Starting from near-random behaviour, the agent progressively learned meaningful control strategies, such as accurate paddle positioning and anticipation of ball trajectories. This behavioural improvement is reflected quantitatively through increasing episode rewards and episode lengths, and qualitatively through stable and controlled gameplay observed in recorded videos. The use of experience replay and a target network proved essential for stabilising training. Without these mechanisms, the non-stationary nature of the learning targets would likely cause divergence when using deep neural networks. The bounded loss behaviour observed during training confirms that these stabilisation techniques were effective in practice. Using Stable-Baselines3 significantly reduced the amount of boilerplate code required to implement DQN, allowing greater focus on understanding algorithmic behaviour rather than low-level engineering details. Importantly, despite the high-level abstraction, the underlying learning process remains transparent and faithful to the original DQN formulation. By explicitly analysing where and how the Q-learning update is applied, this assignment demonstrates that using a library-based implementation does not obscure theoretical understanding. The exploration strategy played a critical role in early learning. The epsilon greedy schedule ensured sufficient exploration of the state–action space during the initial stages of training, while gradual exploitation allowed the agent to consolidate effective behaviours. However, epsilon-greedy exploration is known to be relatively inefficient, and more advanced exploration techniques could further improve learning speed and stability.
+
+    ### 6.2 Limitations and Future Work
+    Despite strong performance, several limitations remain. First, training a DQN agent on pixel-based input is computationally expensive and requires millions of environment interactions, highlighting the sample inefficiency of value-based methods. Second, standard DQN is susceptible to Q-value overestimation and can struggle in environments with more complex dynamics. Future work could address these limitations by incorporating established DQN extensions such as Double DQN to reduce overestimation bias, Dueling DQN to improve value estimation, or Prioritised Experience Replay to focus learning on more informative transitions. Additionally, alternative exploration strategies such as noisy networks could improve sample efficiency. Another potential direction is evaluating generalisation more rigorously by testing the trained agent under modified environment conditions or altered reward structures. This would provide deeper insight into the robustness of the learned policy beyond the standard Breakout setting.
+
+    ### 6.3 Conclusion
+    In conclusion, this assignment successfully demonstrates the application of Deep Reinforcement Learning to a challenging Atari game environment. The implemented DQN agent learns directly from raw pixel input, achieves human-level and beyond performance, and exhibits stable training behaviour consistent with theoretical expectations and prior empirical results. The project highlights the power of combining deep learning with reinforcement learning and reinforces the importance of stabilisation techniques when learning from high-dimensional sensory data. Overall, the results validate both the chosen methodology and the effectiveness of Deep Q-Networks for solving complex sequential decision-making problems.
+    """)
     return
 
 

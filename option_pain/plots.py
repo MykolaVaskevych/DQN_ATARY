@@ -1,9 +1,10 @@
 import json
+from pathlib import Path
 import matplotlib.pyplot as plt
 from pathlib import Path
 
 
-BASE_DIR = Path("/home/nick/Desktop")
+BASE_DIR = Path(__file__).resolve().parent
 
 
 def load_tb_json(filename):
