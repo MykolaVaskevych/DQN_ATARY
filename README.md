@@ -1,5 +1,7 @@
 # A DQN implmentation for the Atari Breakdown game
 
+> **Note:** This repository is a submodule of my [Final Year Project (FYP)](https://github.com/MykolaVaskevych/fyp) - a comparative analysis of Deep Q-Network and Actor-Critic reinforcement learning algorithms at University of Limerick.
+
 ## Quick Start
 
 ```bash
